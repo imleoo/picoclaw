@@ -71,3 +71,34 @@
 - [ ] **Task 3.2**: 引入基于 UDS KV List 的轻量级任务消息队列，拆分解耦 Cron 的 “探测” 与 “执行” 阶段。
 - [ ] **Task 3.3**: 在 `pkg/providers/` 为 LLM 客户端增加基于 UDS KV 统筹的 Token 漏桶算法限流排队功能。
 - [ ] **Task 3.4**: 编写 `Dockerfile` 与 Kubernetes 部署 YAML。剥离一切挂载卷 (Volumes)，使得 PicoClaw 在多副本 (Replicas) 状态下成功联动启动，无损压测千人请求。
+
+---
+
+## 四、WMNN Git 代码管理与分支规范
+为了确保 WMNN 团队在进行深度定制（如介入 UDS SDK）的同时，能够无痛合并开源社区 `PicoClaw` 的持续更新，特制定以下 Git 协作规范：
+
+### 4.1 分支模型 (Branching Model)
+项目中存在两类核心长期分支，以及数个短期工作分支：
+- `main` **(绝对保护分支)**：
+  - **唯一作用**：作为开源项目官方 Upstream 的镜像分支。
+  - **规则**：**严禁**任何 WMNN 团队成员将包含业务定制的代码直接 Commit 或 Merge 到 `main` 分支！该分支仅用于 `git pull upstream main`。
+- `wmnn` **(内部长效基线分支)**：
+  - **唯一作用**：这是 WMNN 多租户版本的核心主分支，也是测试环境与生产环境的基础部署分支。
+  - **来源**：基于 `main` 分支切出。
+- **短期工作分支 (Feature / Fix / Refactor)**：
+  - 命名格式：`feat/uds-storage`、`fix/cron-lock-issue`、`docs/architecture-update` 等。
+  - **来源**：统一基于 `wmnn` 分支切出。
+
+### 4.2 提交流程与规范 (Commit & Merge Flow)
+1. **日常开发**：开发者从 `wmnn` 分支切出 `feat/xxx`，完成开发后通过 Pull Request (PR) 申请合并入 `wmnn`。
+2. **Commit Message 规范 (Angular 标准)**：
+   - 必须包含类型前缀，如：`feat: 接入 UDS Model`、`fix: 修复 Redis 偶发断连`、`docs: 更新设计文档`、`refactor: 提取 Storage 接口`。
+3. **合并策略 (Squash and Merge)**：
+   - 短期工作分支合并回 `wmnn` 时，尽可能使用 **Squash**（压缩提交），确保 `wmnn` 的 Commit 历史保持整洁的原子性节点，便于后续追溯和冲突排查。
+
+### 4.3 上游同步流程 (Upstream Sync Checkpoint)
+当官方 PicoClaw 发布了重要的新版本（如新增模型支持），负责技术底座的同学需要执行上游代码同步：
+1. 更新本地 `main` 分支使其与官方代码库绝对一致。
+2. 切换到 `wmnn` 分支。
+3. 执行 `git rebase main`（注意：**推荐使用 Rebase 而不是 Merge**，这样可以让我们的 WMNN 定制代码始终像是一层贴片，“盖”在官方最新代码之上，提交线性极其清晰）。
+4. 由于我们在设计上采用了**目录隔离**（新增 `pkg/storage/uds/`）和**依赖注入**（仅修改了 `main.go` 组装入口），该 Rebase 过程中的冲突将仅限于少数几个初始化入口点，解决完冲突后 `git push --force` 更新远端 `wmnn` 分支即可。
