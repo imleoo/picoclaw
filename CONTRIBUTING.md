@@ -101,6 +101,17 @@ git checkout -b your-feature-branch
 
 Use descriptive branch names, e.g. `fix/telegram-timeout`, `feat/ollama-provider`, `docs/contributing-guide`.
 
+**Branch Protection Rules** (enforced via Git hooks):
+
+1. ❌ **Direct push to `main` is prohibited** - Use Pull Requests only
+2. ❌ **Direct push to `wmnn` is prohibited** - No direct commits allowed
+3. ✅ **Only merges from `main` to `wmnn` are allowed**
+
+After cloning, install Git hooks:
+```bash
+./scripts/install-git-hooks.sh
+```
+
 ### Commits
 
 - Write clear, concise commit messages in English.
