@@ -1,0 +1,188 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每天 UTC 02:00 (北京时间 10:00) 自动检查
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync even if no changes'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-upstream-to-main:
+    name: Sync sipeed/picoclaw:main → imleoo/picoclaw:main
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      pr_number: ${{ steps.create_pr.outputs.pr_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/sipeed/picoclaw.git || true
+          git fetch upstream main
+
+      - name: Check for changes
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          echo "commits_behind=$BEHIND" >> "$GITHUB_OUTPUT"
+
+          if [ "$BEHIND" -gt 0 ] || [ "${{ github.event.inputs.force_sync }}" = "true" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "📊 Found $BEHIND commits behind upstream"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Already up to date with upstream"
+          fi
+
+      - name: Create sync branch
+        if: steps.check.outputs.has_changes == 'true'
+        id: sync_branch
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d-%H%M%S)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+          git merge upstream/main --no-edit -m "sync: merge upstream main (${{ steps.check.outputs.commits_behind }} commits)"
+
+      - name: Push sync branch
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git push origin "${{ steps.sync_branch.outputs.branch }}"
+
+      - name: Create Pull Request
+        if: steps.check.outputs.has_changes == 'true'
+        id: create_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMITS=$(git log --oneline HEAD~${{ steps.check.outputs.commits_behind }}..HEAD | head -10)
+
+          PR_BODY=$(cat <<'EOF'
+          ## 🔄 Upstream Sync
+
+          Automatically syncing ${{ steps.check.outputs.commits_behind }} commits from `sipeed/picoclaw:main`
+
+          ### Recent Changes
+          ```
+          $COMMITS
+          ```
+
+          ### Sync Flow
+          ```
+          sipeed/picoclaw:main → imleoo/picoclaw:main → imleoo/picoclaw:wmnn
+          ```
+
+          ---
+          🤖 This PR was created automatically by GitHub Actions
+          EOF
+          )
+
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "${{ steps.sync_branch.outputs.branch }}" \
+            --title "sync: merge upstream main (${{ steps.check.outputs.commits_behind }} commits)" \
+            --body "$PR_BODY" \
+            --label "sync" \
+            --label "automated")
+
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "✅ Created PR #$PR_NUMBER: $PR_URL"
+
+  sync-main-to-wmnn:
+    name: Sync imleoo/picoclaw:main → imleoo/picoclaw:wmnn
+    runs-on: ubuntu-latest
+    needs: sync-upstream-to-main
+    if: needs.sync-upstream-to-main.outputs.has_changes == 'true'
+    steps:
+      - name: Wait for PR merge
+        if: needs.sync-upstream-to-main.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ needs.sync-upstream-to-main.outputs.pr_number }}"
+          echo "⏳ Waiting for PR #$PR_NUMBER to be merged..."
+
+          for i in {1..60}; do
+            STATE=$(gh pr view "$PR_NUMBER" --json state --jq .state)
+            if [ "$STATE" = "MERGED" ]; then
+              echo "✅ PR #$PR_NUMBER merged successfully"
+              break
+            elif [ "$STATE" = "CLOSED" ]; then
+              echo "❌ PR #$PR_NUMBER was closed without merging"
+              exit 1
+            fi
+            echo "⏳ PR state: $STATE, waiting... ($i/60)"
+            sleep 30
+          done
+
+      - name: Checkout wmnn branch
+        uses: actions/checkout@v6
+        with:
+          ref: wmnn
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge main into wmnn
+        run: |
+          git fetch origin main
+          BEHIND=$(git rev-list --count HEAD..origin/main)
+          echo "📊 wmnn is $BEHIND commits behind main"
+          git merge origin/main --no-edit -m "sync: merge main to wmnn ($BEHIND commits)"
+
+      - name: Push to wmnn
+        run: |
+          git push origin wmnn
+          echo "✅ Successfully synced main to wmnn"
+
+  prevent-reverse-sync:
+    name: Prevent Reverse Sync
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check PR direction
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BASE="${{ github.event.pull_request.base.ref }}"
+          HEAD="${{ github.event.pull_request.head.ref }}"
+
+          # 阻止 wmnn → main 的 PR
+          if [ "$BASE" = "main" ] && [ "$HEAD" = "wmnn" ]; then
+            echo "❌ ERROR: Reverse sync detected!"
+            echo "Cannot merge wmnn → main. Only main → wmnn is allowed."
+            exit 1
+          fi
+
+          # 阻止 main → upstream 的推送（理论上不会发生，但作为保护）
+          if [[ "$HEAD" == *"upstream"* ]]; then
+            echo "❌ ERROR: Cannot push to upstream!"
+            exit 1
+          fi
+
+          echo "✅ PR direction is valid"
