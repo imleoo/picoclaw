@@ -313,7 +313,10 @@ func assistantMessageInternalOnly(msg providers.Message) bool {
 	return strings.TrimSpace(msg.Content) == handledToolResponseSummaryText
 }
 
-func visibleAssistantToolSummaryMessages(toolCalls []providers.ToolCall, toolFeedbackMaxArgsLength int) []sessionChatMessage {
+func visibleAssistantToolSummaryMessages(
+	toolCalls []providers.ToolCall,
+	toolFeedbackMaxArgsLength int,
+) []sessionChatMessage {
 	if len(toolCalls) == 0 {
 		return nil
 	}
